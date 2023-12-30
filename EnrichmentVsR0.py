@@ -9,9 +9,10 @@ from numpy import log2
 from scipy import stats
 from sklearn.preprocessing import normalize
 import functools
-def get_logo_from_table_counts(df_table_count_,sort_column,experiment_column,row_index_thresh,ascending):
+from scipy.stats import entropy
+def get_logo_from_table_counts(df_table_count_,sort_column,row_index_thresh,ascending):
     df_table_count=df_table_count_.sort_values(by=[sort_column],ascending=ascending)
-    count_mat=np.zeros((len(df_table_count['kmer'][0]),4), dtype='float')
+    count_mat=np.zeros([len(df_table_count['kmer'][0]),4], dtype='float')
     index=0
     sum_count=0
     for index2, row in df_table_count.iterrows():
@@ -97,7 +98,7 @@ def plotTwoPssmRatioScores(df_all,motif_first,motif_second,ro_nmae, first_exp_na
 def create_save_logo(mot,save_fig_path,save_xls_path,title):
     logo_mat, IC = IC_matrix(mot.pwm)
     df = pd.DataFrame(mot.counts, columns=['A', 'C', 'G', 'T'])
-    df.to_csv(save_xls_path+".cvs")
+    #df.to_csv(save_xls_path+".cvs")
     df = pd.DataFrame(logo_mat.T, columns=['A', 'C', 'G', 'T'])
     fig, ax = plt.subplots()
     crp_logo = lm.Logo(df, vpad=0)
@@ -173,22 +174,99 @@ def merge_all_files():
     for exp_name,file in zip(experiment_nemse,file_list):
         df=pd.read_csv(file, sep="\t")[['kmer',	'ObservedCount']]
         df.rename(columns={'ObservedCount':'ObservedCount_'+exp_name}, inplace=True)
+
         data_frames.append(df)
     df_merged = functools.reduce(lambda left, right: pd.merge(left, right, on='kmer', how='outer'), data_frames)
     df_merged.to_csv('Allconditions.cvs', sep="\t")
     i=8
+
+def get_logos(df_all,first_exp, r0, out_path):
+
+    df_all = df_all[['kmer', 'ObservedCount_' + first_exp, 'ObservedCount_' + r0]]
+    df_all = df_all.replace('', np.nan, regex=True)
+    df_first_expeiment = df_all[['kmer', 'ObservedCount_' + first_exp, 'ObservedCount_' + r0]]
+    df_first_expeiment = df_first_expeiment.dropna()
+    df_first_expeiment = df_first_expeiment.sort_values(by=['ObservedCount_' + first_exp], ascending=True)
+    threshold = df_first_expeiment['ObservedCount_' + first_exp].sum().item() / 3000000
+    threshold=30
+    df_first_expeiment = df_first_expeiment[threshold < df_first_expeiment['ObservedCount_' + first_exp]].reset_index()
+
+    row_index_thresh = 2000
+    print("seq num="+str(df_first_expeiment.shape[0]))
+    df_first_expeiment['enrichment ' + first_exp] = computeEnrichment(df_first_expeiment, 'ObservedCount_' + r0,'ObservedCount_' + first_exp)
+
+
+    mot = get_logo_from_table_counts(df_first_expeiment, 'enrichment ' + first_exp, row_index_thresh, False)
+    save_fig_path = out_path + " logo -Top " + first_exp + '.png'
+    create_save_logo(mot, save_fig_path, save_fig_path, " logo -Top " + first_exp)
+
+    mot = get_logo_from_table_counts(df_first_expeiment, 'enrichment ' + first_exp, row_index_thresh, True)
+    save_fig_path = out_path + " logo -Bottom " + first_exp + '.png'
+    create_save_logo(mot, save_fig_path, save_fig_path, " logo -Bottom " + first_exp)
+
+def remove_one_in_a_million(df,exp,frac):
+    r= np.array(df[ exp], dtype=float)
+    sum_r = r[~np.isnan(r)].sum()
+    thres=sum_r/frac
+
+    r[r<thres]= np.nan
+    return r
+def computeEnrichment(df,r0,exp):
+    r0_array=np.array(df['ObservedCount_'+r0])
+    r1_array = np.array(df['ObservedCount_' +exp])
+    sum_r0=r0_array[~np.isnan(r0_array)].sum()
+    sum_r1 = r0_array[~np.isnan(r1_array)].sum()
+    enrichments = (r1_array/sum_r1) / (r0_array/sum_r0)
+    enrichments=np.log10(enrichments)
+    return enrichments
+
+def SDsPerR0(df,r0,exp):
+
+    r0_array = np.array(df['ObservedCount_' + r0])/np.sum(np.array(df['ObservedCount_' + r0]))
+    r1_array = np.array(df['ObservedCount_' + exp])/np.sum(np.array(df['ObservedCount_' + exp]))
+    scores_unique=np.unique(r0_array)
+    df_gr=pd.DataFrame()
+    df_gr['r1']= r1_array
+    df_gr['r0'] = r0_array
+    df_gr['Loess-bins'] = pd.qcut(df_gr['r0'], 50)
+    df_gr = df_gr.groupby(['Loess-bins'])
+
+    bins_of_grous = [x.right for x in list(df_gr.groups.keys())]
+    r1_std=np.array(df_gr['r1'].std())
+    r1_std[np.isnan(r1_std)]=0
+
+    return bins_of_grous,r1_std
+
+
 if __name__ == '__main__':
-    merge_all_files()
+    first_exp='R1_mix25'
+    second_exp ='R1_mix10'
+    r0='R0_kinetics'
+    frac=10000000
     df_all=pd.read_csv('Allconditions.cvs', sep="\t")
-    df_all = df_all.replace( '',np.nan, regex=True)
-    df_all=df_all.dropna()
-    fig_save_path='tmp_fig.png'
-    fig_save_path='pssmVsEnrichmentGraphs/R1.6nm.png'
-    df_all=plotPssmScores(df_all, 'R0_thermo', 'R1_6nM', fig_save_path)
-    fig_save_path='pssmVsEnrichmentGraphs/R1.20nm.png'
-    df_all=plotPssmScores(df_all, 'R0_thermo', 'R1_20nM', fig_save_path)
-    fig_save_path = 'pssmVsEnrichmentGraphs/R1.60nm.png'
-    df_all=plotPssmScores(df_all, 'R0_thermo', 'R1_60nM', fig_save_path)
-    df_all.to_csv('AllDatawithpssm.cvs', sep="\t")
+    out_path = "pssmVsEnrichmentGraphs/Enrichments/"
 
+    df_all=df_all[['ObservedCount_'+r0,'ObservedCount_'+first_exp,'ObservedCount_'+second_exp]]
+    df_all['ObservedCount_'+first_exp]=remove_one_in_a_million(df_all,'ObservedCount_'+first_exp, frac)
+    df_all['ObservedCount_' +second_exp] = remove_one_in_a_million(df_all, 'ObservedCount_' +second_exp, frac)
+    df_all['enrichment'+first_exp]= computeEnrichment( df_all, r0, first_exp)
+    df_all['enrichment' + second_exp] = computeEnrichment(df_all, r0, second_exp)
+    df_all = df_all.dropna()
+    r0_bars,r1SDs = SDsPerR0(df_all, r0, first_exp)
 
+    pearson_coef, p_value = stats.pearsonr(df_all['enrichment'+first_exp], df_all['enrichment' + second_exp])
+    r0_bars1, r1SDs1 = SDsPerR0(df_all, r0, second_exp)
+    plt.scatter(r0_bars1, r1SDs1, label=second_exp)
+
+    r0_bars, r1SDs = SDsPerR0(df_all, r0, first_exp)
+    plt.scatter( r0_bars,r1SDs,label=first_exp )
+
+    plt.ylabel("STD")
+    plt.xlabel("R0-value")
+
+    plt.title("R1-std-distribution" )
+    plt.legend(loc='upper left')
+    plt.tight_layout()
+    plt.savefig(out_path+"R1-mean vs R0"+first_exp +" "+second_exp+".png")
+
+    plt.close()
